@@ -59,6 +59,21 @@ def main() -> int:
     except Exception:
         pass
 
+    # Listening for keys needs Input Monitoring as well on newer macOS.
+    # Without it CGEventTapCreate returns NULL and pynput gives up
+    # silently, so the hotkey is dead with no error anywhere. 0=granted,
+    # 1=denied (user must toggle it in System Settings), 2=not yet asked
+    # (IOHIDRequestAccess shows the system prompt).
+    try:
+        import ctypes
+
+        iokit = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+        kIOHIDRequestTypeListenEvent = 1
+        if iokit.IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != 0:
+            iokit.IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+    except Exception:
+        pass
+
     config = load_config()
     engine = DictationApp(config)
 
