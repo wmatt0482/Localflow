@@ -41,11 +41,24 @@ Platform notes:
 The first run downloads the Whisper model (~75 MB for `base.en`) to the local
 Hugging Face cache; after that it's fully offline.
 
+## Install as a Mac app (recommended on macOS)
+
+Run `./build_app.command` (or double-click it in Finder). It builds a
+standalone **`dist/LocalFlow.app`** — drag it into **/Applications** and
+launch it from Spotlight like any app. It lives in the **menu bar**:
+🎤 when listening, 🔴 while recording, with Pause and Quit in its menu.
+
+Because the app has its own identity, macOS prompts for **Microphone** and
+**Accessibility** permissions for *LocalFlow* itself (not your terminal) on
+first use. To start it at login: System Settings → General → Login Items →
+add LocalFlow.
+
 ## Use
 
-Easiest on macOS: double-click **`LocalFlow.command`** in Finder (or run
-`./LocalFlow.command`). It creates a virtual environment on first run,
-installs the app into it, and starts dictation — no manual setup.
+Quick start without building the app: double-click **`LocalFlow.command`**
+in Finder (or run `./LocalFlow.command`). It creates a virtual environment
+on first run, installs the app into it, and starts dictation — no manual
+setup. `localflow-tray` starts the menu-bar UI without the app bundle.
 
 Or, with the package installed:
 

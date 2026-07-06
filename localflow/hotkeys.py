@@ -73,14 +73,29 @@ class HotkeyListener:
             self._active = False
             self.on_stop()
 
-    def run(self) -> None:
-        """Block, listening for the hotkey until interrupted."""
+    def start(self) -> None:
+        """Start listening in a background thread (non-blocking)."""
+        if self._listener is not None:
+            return
         from pynput.keyboard import Listener
 
-        with Listener(on_press=self._on_press, on_release=self._on_release) as listener:
-            self._listener = listener
-            listener.join()
+        self._listener = Listener(
+            on_press=self._on_press, on_release=self._on_release
+        )
+        self._listener.start()
+
+    def join(self) -> None:
+        """Block until the listener stops (Ctrl+C interrupts)."""
+        if self._listener is not None:
+            self._listener.join()
 
     def stop(self) -> None:
-        if self._listener is not None:
-            self._listener.stop()
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            listener.stop()
+        self._active = False
+
+    def run(self) -> None:
+        """Block, listening for the hotkey until interrupted."""
+        self.start()
+        self.join()

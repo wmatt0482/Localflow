@@ -34,6 +34,8 @@ class DictationApp:
         )
         self._jobs: queue.Queue = queue.Queue()
         self._started_at = 0.0
+        self._listener: HotkeyListener | None = None
+        self.ready = False
 
     # -- hotkey callbacks ------------------------------------------------
 
@@ -84,21 +86,45 @@ class DictationApp:
             except Exception as e:
                 print(f"[localflow] could not deliver text: {e}", flush=True)
 
-    # -- main loop ---------------------------------------------------------
+    # -- lifecycle ---------------------------------------------------------
 
-    def run(self) -> None:
-        print(f"[localflow] loading model '{self.config.model}'...", flush=True)
+    @property
+    def recording(self) -> bool:
+        return self.recorder.recording
+
+    def start(self) -> None:
+        """Load the model and begin listening (non-blocking)."""
         self.transcriber.load()
-
         worker = threading.Thread(target=self._worker, daemon=True)
         worker.start()
-
-        listener = HotkeyListener(
+        self._listener = HotkeyListener(
             hotkey=self.config.hotkey,
             mode=self.config.mode,
             on_start=self._on_start,
             on_stop=self._on_stop,
         )
+        self._listener.start()
+        self.ready = True
+
+    def pause(self) -> None:
+        """Temporarily stop reacting to the hotkey."""
+        if self._listener is not None:
+            self._listener.stop()
+        if self.recorder.recording:
+            self.recorder.stop()
+
+    def resume(self) -> None:
+        if self._listener is not None:
+            self._listener.start()
+
+    def stop(self) -> None:
+        self.pause()
+        self._jobs.put(None)
+
+    def run(self) -> None:
+        """Blocking CLI mode."""
+        print(f"[localflow] loading model '{self.config.model}'...", flush=True)
+        self.start()
         action = "hold" if self.config.mode == "hold" else "press"
         print(
             f"[localflow] ready — {action} '{self.config.hotkey}' to dictate "
@@ -106,9 +132,9 @@ class DictationApp:
             flush=True,
         )
         try:
-            listener.run()
+            self._listener.join()
         except KeyboardInterrupt:
             pass
         finally:
-            self._jobs.put(None)
+            self.stop()
             print("\n[localflow] bye", flush=True)
