@@ -43,12 +43,19 @@ Hugging Face cache; after that it's fully offline.
 
 ## Use
 
+Easiest on macOS: double-click **`LocalFlow.command`** in Finder (or run
+`./LocalFlow.command`). It creates a virtual environment on first run,
+installs the app into it, and starts dictation — no manual setup.
+
+Or, with the package installed:
+
 ```bash
 localflow                 # start the dictation daemon
 ```
 
-Hold **Right Ctrl**, speak, release — the transcribed text appears at your
-cursor. `Ctrl+C` quits.
+Hold the hotkey — **Right ⌘ Command** on macOS (the key just right of the
+space bar), **Right Ctrl** elsewhere — speak, release, and the transcribed
+text appears at your cursor. `Ctrl+C` quits.
 
 Options:
 
@@ -66,7 +73,8 @@ localflow init                          # write an example config file
 model = "base.en"        # tiny/base/small/medium/large-v3 (+.en variants)
 device = "auto"          # "auto", "cpu" or "cuda"
 
-hotkey = "ctrl_r"        # e.g. "ctrl_r", "f9", "pause", "scroll_lock"
+# hotkey = "cmd_r"       # default: "cmd_r" (right Cmd) on macOS, "ctrl_r"
+                         # elsewhere; also e.g. "f9", "pause", "scroll_lock"
 mode = "hold"            # "hold" (push-to-talk) or "toggle"
 
 output = "paste"         # "paste" (Ctrl+V) or "type" (simulated keystrokes)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,10 @@ from typing import Any
 DEFAULT_CONFIG_PATH = Path(
     os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
 ) / "localflow" / "config.toml"
+
+
+def _default_hotkey() -> str:
+    return "cmd_r" if sys.platform == "darwin" else "ctrl_r"
 
 
 @dataclass
@@ -32,8 +37,10 @@ class Config:
     language: str | None = None
 
     # Hotkey that starts/stops recording. Names from pynput's Key enum
-    # (e.g. "ctrl_r", "f9", "pause") or a single character.
-    hotkey: str = "ctrl_r"
+    # (e.g. "ctrl_r", "cmd_r", "f9", "pause") or a single character.
+    # Default: right Command on macOS (Mac laptops have no right Ctrl),
+    # right Ctrl elsewhere.
+    hotkey: str = field(default_factory=lambda: _default_hotkey())
     # "hold": record while the key is held. "toggle": press to start,
     # press again to stop.
     mode: str = "hold"

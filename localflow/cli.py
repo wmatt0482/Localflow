@@ -17,7 +17,8 @@ model = "base.en"        # tiny/base/small/medium/large-v3 (+.en variants)
 device = "auto"          # "auto", "cpu" or "cuda"
 # language = "en"        # omit to auto-detect
 
-hotkey = "ctrl_r"        # e.g. "ctrl_r", "f9", "pause", "scroll_lock"
+# hotkey = "cmd_r"       # default: "cmd_r" (right Cmd) on macOS, "ctrl_r"
+                         # elsewhere; also e.g. "f9", "pause", "scroll_lock"
 mode = "hold"            # "hold" (push-to-talk) or "toggle"
 
 output = "paste"         # "paste" (Ctrl+V) or "type" (simulated keystrokes)

@@ -6,7 +6,7 @@ from localflow import cli
 def test_init_writes_example_config(tmp_path: Path, capsys):
     path = tmp_path / "config.toml"
     assert cli.main(["init", "--config", str(path)]) == 0
-    assert 'hotkey = "ctrl_r"' in path.read_text()
+    assert 'model = "base.en"' in path.read_text()
 
 
 def test_init_refuses_overwrite(tmp_path: Path):
