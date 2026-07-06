@@ -123,6 +123,9 @@ class DictationApp:
 
     def run(self) -> None:
         """Blocking CLI mode."""
+        from .hotkeys import prime_keycode_context
+
+        prime_keycode_context()
         print(f"[localflow] loading model '{self.config.model}'...", flush=True)
         self.start()
         action = "hold" if self.config.mode == "hold" else "press"

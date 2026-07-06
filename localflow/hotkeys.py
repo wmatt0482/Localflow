@@ -8,7 +8,37 @@ Supports two interaction modes:
 
 from __future__ import annotations
 
+import sys
 from typing import Callable
+
+
+def prime_keycode_context() -> None:
+    """Cache the keyboard layout for pynput. Must run on the MAIN thread.
+
+    macOS 15+ kills the process (EXC_BREAKPOINT in dispatch_assert_queue)
+    when the TIS* input-source APIs are called off the main queue. pynput
+    resolves the keyboard layout with those APIs on its listener thread and
+    on whatever thread first uses a Controller, so resolve the layout here
+    once and patch pynput to reuse the cached result. Layout switches while
+    the app runs won't be picked up — same tradeoff pynput already makes
+    for the lifetime of a listener.
+    """
+    if sys.platform != "darwin":
+        return
+    import contextlib
+
+    from pynput._util import darwin as util_darwin
+    from pynput.keyboard import _darwin as keyboard_darwin
+
+    with util_darwin.keycode_context() as context:
+        cached = context
+
+    @contextlib.contextmanager
+    def cached_context():
+        yield cached
+
+    util_darwin.keycode_context = cached_context
+    keyboard_darwin.keycode_context = cached_context
 
 
 def parse_hotkey(name: str):

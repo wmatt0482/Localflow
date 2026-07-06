@@ -39,6 +39,11 @@ def main() -> int:
 
     from .app import DictationApp
     from .config import load_config
+    from .hotkeys import prime_keycode_context
+
+    # We're on the main thread here; the engine boots on a worker thread,
+    # which must never touch the TIS keyboard-layout APIs.
+    prime_keycode_context()
 
     config = load_config()
     engine = DictationApp(config)
