@@ -45,6 +45,20 @@ def main() -> int:
     # which must never touch the TIS keyboard-layout APIs.
     prime_keycode_context()
 
+    # Without Accessibility the hotkey listener silently receives nothing,
+    # and a quiet AXIsProcessTrusted() check doesn't even register the app
+    # in the Accessibility pane. Ask with the system prompt instead, which
+    # does both. macOS shows the dialog at most once per grant state.
+    try:
+        import HIServices
+
+        if not HIServices.AXIsProcessTrusted():
+            HIServices.AXIsProcessTrustedWithOptions(
+                {"AXTrustedCheckOptionPrompt": True}
+            )
+    except Exception:
+        pass
+
     config = load_config()
     engine = DictationApp(config)
 
