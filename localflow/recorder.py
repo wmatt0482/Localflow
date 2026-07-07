@@ -40,14 +40,30 @@ class Recorder:
             with self._lock:
                 self._frames.append(indata.copy())
 
-        self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            device=self.device,
-            callback=callback,
-        )
-        self._stream.start()
+        def open_stream():
+            stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="float32",
+                device=self.device,
+                callback=callback,
+            )
+            stream.start()
+            return stream
+
+        try:
+            self._stream = open_stream()
+        except sd.PortAudioError:
+            # PortAudio's device state goes stale after the machine sleeps
+            # or audio devices come and go, and every open then fails with
+            # an internal error (-9986) until PortAudio is reinitialized.
+            print(
+                "[localflow] audio device list stale — reinitializing",
+                flush=True,
+            )
+            sd._terminate()
+            sd._initialize()
+            self._stream = open_stream()
 
     def stop(self) -> np.ndarray:
         """Stop recording and return the audio as a 1-D float32 array."""
