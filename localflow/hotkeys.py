@@ -103,10 +103,24 @@ class HotkeyListener:
             self._active = False
             self.on_stop()
 
+    @property
+    def alive(self) -> bool:
+        """Whether the underlying listener thread is actually running.
+
+        pynput's listener thread exits on its own when macOS tears down or
+        refuses the event tap, and nothing else notices: the hotkey simply
+        stops responding. Callers poll this to detect that.
+        """
+        listener = self._listener
+        return listener is not None and listener.is_alive()
+
     def start(self) -> None:
         """Start listening in a background thread (non-blocking)."""
-        if self._listener is not None:
+        if self.alive:
             return
+        if self._listener is not None:
+            # A dead listener object can't be restarted; drop it first.
+            self.stop()
         from pynput.keyboard import Listener
 
         self._listener = Listener(

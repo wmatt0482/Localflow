@@ -24,6 +24,7 @@ ICON_LOADING = "⏳"    # hourglass
 ICON_READY = "\U0001f3a4"  # microphone
 ICON_RECORDING = "\U0001f534"  # red circle
 ICON_PAUSED = "⏸"     # pause
+ICON_TROUBLE = "⚠️"  # warning sign
 
 
 def _hotkey_label(hotkey: str) -> str:
@@ -38,8 +39,11 @@ def main() -> int:
     import rumps
 
     from .app import DictationApp
+    from .applog import log, setup as setup_logging
     from .config import load_config
     from .hotkeys import prime_keycode_context
+
+    log_path = setup_logging()
 
     # We're on the main thread here; the engine boots on a worker thread,
     # which must never touch the TIS keyboard-layout APIs.
@@ -52,27 +56,32 @@ def main() -> int:
     try:
         import HIServices
 
-        if not HIServices.AXIsProcessTrusted():
+        ax_trusted = HIServices.AXIsProcessTrusted()
+        if not ax_trusted:
             HIServices.AXIsProcessTrustedWithOptions(
                 {"AXTrustedCheckOptionPrompt": True}
             )
-    except Exception:
-        pass
+    except Exception as e:
+        ax_trusted = f"check failed: {e}"
 
     # Listening for keys needs Input Monitoring as well on newer macOS.
     # Without it CGEventTapCreate returns NULL and pynput gives up
-    # silently, so the hotkey is dead with no error anywhere. 0=granted,
-    # 1=denied (user must toggle it in System Settings), 2=not yet asked
-    # (IOHIDRequestAccess shows the system prompt).
+    # silently, so the hotkey is dead with no error anywhere.
     try:
         import ctypes
 
         iokit = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
         kIOHIDRequestTypeListenEvent = 1
-        if iokit.IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != 0:
+        hid_access = iokit.IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+        hid_access = {0: "granted", 1: "denied", 2: "undetermined"}.get(
+            hid_access, hid_access
+        )
+        if hid_access != "granted":
             iokit.IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-    except Exception:
-        pass
+    except Exception as e:
+        hid_access = f"check failed: {e}"
+
+    log(f"[localflow] accessibility={ax_trusted} input-monitoring={hid_access}")
 
     config = load_config()
     engine = DictationApp(config)
@@ -92,6 +101,7 @@ def main() -> int:
                 self.hint_item,
                 self.pause_item,
                 None,
+                rumps.MenuItem("Open log", callback=self.on_open_log),
                 rumps.MenuItem("Quit LocalFlow", callback=self.on_quit),
             ]
             # Poll engine state from the main thread; AppKit UI must not
@@ -106,10 +116,22 @@ def main() -> int:
                 icon = ICON_LOADING
             elif engine.recording:
                 icon = ICON_RECORDING
+            elif not engine.healthy:
+                # The watchdog restarts dead threads within seconds; if
+                # this sticks, something is wrong worth looking at.
+                icon = ICON_TROUBLE
             else:
                 icon = ICON_READY
             if self.title != icon:
                 self.title = icon
+
+        def on_open_log(self, _item) -> None:
+            if log_path is None:
+                rumps.alert("LocalFlow", "No log file could be opened.")
+                return
+            import subprocess
+
+            subprocess.Popen(["/usr/bin/open", "-R", str(log_path)])
 
         def on_pause(self, item) -> None:
             if self.paused:
@@ -128,9 +150,21 @@ def main() -> int:
         try:
             engine.start()
         except Exception as e:
-            print(f"[localflow] failed to start: {e}", flush=True)
+            log(f"[localflow] failed to start: {e}")
             rumps.notification(
                 "LocalFlow", "Failed to start", str(e), sound=False
+            )
+            return
+        # pynput exits its listener thread silently when the event tap
+        # can't be created (missing permission); make that visible.
+        import time as _time
+
+        _time.sleep(3)
+        if engine._listener is not None and not engine._listener.alive:
+            log(
+                "[localflow] hotkey listener died — event tap not created. "
+                "Check Accessibility AND Input Monitoring in System "
+                "Settings > Privacy & Security, then relaunch."
             )
 
     threading.Thread(target=boot, daemon=True).start()
