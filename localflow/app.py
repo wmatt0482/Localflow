@@ -37,9 +37,11 @@ class DictationApp:
             method=config.output, restore_clipboard=config.restore_clipboard
         )
         self._jobs: queue.Queue = queue.Queue()
+        self._audio_cmds: queue.Queue = queue.Queue()
         self._started_at = 0.0
         self._listener: HotkeyListener | None = None
         self._worker_thread: threading.Thread | None = None
+        self._audio_thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
         self._stopping = threading.Event()
         self._paused = False
@@ -47,7 +49,22 @@ class DictationApp:
 
     # -- hotkey callbacks ------------------------------------------------
 
+    # These two run on the macOS event-tap thread, so they must return
+    # immediately. macOS switches off a tap whose callback is slow, and
+    # opening the microphone can block for seconds when PortAudio's device
+    # list has gone stale after sleep — which used to kill the hotkey for
+    # the rest of the session. Hand the work to _audio_worker instead,
+    # which performs it in arrival order.
+
     def _on_start(self) -> None:
+        self._audio_cmds.put("start")
+
+    def _on_stop(self) -> None:
+        self._audio_cmds.put("stop")
+
+    # -- audio control worker ---------------------------------------------
+
+    def _begin_recording(self) -> None:
         try:
             self.recorder.start()
         except Exception as e:
@@ -57,13 +74,30 @@ class DictationApp:
         log("● recording... (release to transcribe)" if self.config.mode == "hold"
             else "● recording... (press hotkey again to stop)")
 
-    def _on_stop(self) -> None:
+    def _finish_recording(self) -> None:
+        if not self.recorder.recording:
+            return
         audio = self.recorder.stop()
         duration = time.monotonic() - self._started_at
         if duration < MIN_UTTERANCE_SECONDS or audio.size == 0:
             log("  (too short, ignored)")
             return
         self._jobs.put(audio)
+
+    def _audio_worker(self) -> None:
+        while True:
+            command = self._audio_cmds.get()
+            if command is None:
+                return
+            try:
+                if command == "start":
+                    self._begin_recording()
+                elif command == "stop":
+                    self._finish_recording()
+                elif command == "abort":
+                    self._abort_recording()
+            except Exception as e:
+                log_exception(f"[localflow] audio error ({command}): {e}")
 
     # -- transcription worker ---------------------------------------------
 
@@ -110,10 +144,14 @@ class DictationApp:
         """Whether both background threads are running (or intentionally
         paused)."""
         worker_ok = self._worker_thread is not None and self._worker_thread.is_alive()
+        audio_ok = self._audio_thread is not None and self._audio_thread.is_alive()
         listener_ok = self._paused or (
-            self._listener is not None and self._listener.alive
+            self._listener is not None
+            and self._listener.alive
+            # A live thread whose tap macOS switched off is still deaf.
+            and self._listener.tap_enabled
         )
-        return worker_ok and listener_ok
+        return worker_ok and audio_ok and listener_ok
 
     def _abort_recording(self) -> None:
         """Drop an in-flight recording that can never be completed.
@@ -133,6 +171,12 @@ class DictationApp:
         )
         self._worker_thread.start()
 
+    def _start_audio_worker(self) -> None:
+        self._audio_thread = threading.Thread(
+            target=self._audio_worker, name="localflow-audio", daemon=True
+        )
+        self._audio_thread.start()
+
     def _watchdog(self) -> None:
         """Revive background threads that died.
 
@@ -146,6 +190,21 @@ class DictationApp:
                 if self._worker_thread is not None and not self._worker_thread.is_alive():
                     log("[localflow] transcription worker died — restarting")
                     self._start_worker()
+                if self._audio_thread is not None and not self._audio_thread.is_alive():
+                    log("[localflow] audio worker died — restarting")
+                    self._start_audio_worker()
+                listener = self._listener
+                if (
+                    not self._paused
+                    and listener is not None
+                    and listener.alive
+                    and not listener.tap_enabled
+                ):
+                    # Backstop: normally the listener re-arms itself the
+                    # moment macOS reports the tap off, but that report is
+                    # only delivered if the tap is still wired up at all.
+                    log("[localflow] event tap is deaf — re-arming")
+                    listener.rearm()
                 if (
                     not self._paused
                     and self._listener is not None
@@ -176,11 +235,15 @@ class DictationApp:
         if self._stopping.is_set():
             return
         self._start_worker()
+        self._start_audio_worker()
         self._listener = HotkeyListener(
             hotkey=self.config.hotkey,
             mode=self.config.mode,
             on_start=self._on_start,
             on_stop=self._on_stop,
+            # A hold cut short by the tap dying leaves the mic open with
+            # audio nobody will ever ask for; drop it.
+            on_interrupt=lambda: self._audio_cmds.put("abort"),
         )
         if not self._paused:
             self._listener.start()
@@ -207,6 +270,7 @@ class DictationApp:
         self._stopping.set()
         self.pause()
         self._jobs.put(None)
+        self._audio_cmds.put(None)
 
     def run(self) -> None:
         """Blocking CLI mode."""

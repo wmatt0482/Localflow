@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from typing import Callable
 
+from .applog import log
+
 
 def prime_keycode_context() -> None:
     """Cache the keyboard layout for pynput. Must run on the MAIN thread.
@@ -60,6 +62,71 @@ def parse_hotkey(name: str):
         ) from None
 
 
+# macOS switches an event tap off behind your back: if the tap's callback
+# takes too long it sends kCGEventTapDisabledByTimeout and stops delivering
+# events, and certain system events do the same. pynput enables the tap once
+# at startup and keeps no reference to it, so it can never switch it back on
+# — the listener thread stays alive but goes permanently deaf, which looks
+# exactly like "the hotkey stopped working" until the app is restarted.
+# Catch the notification macOS sends and re-arm the tap.
+def _listener_class():
+    from pynput.keyboard import Listener
+
+    if sys.platform != "darwin":
+        return Listener
+
+    from Quartz import (
+        CGEventTapEnable,
+        CGEventTapIsEnabled,
+        kCGEventTapDisabledByTimeout,
+        kCGEventTapDisabledByUserInput,
+    )
+
+    _TAP_DISABLED = (
+        kCGEventTapDisabledByTimeout,
+        kCGEventTapDisabledByUserInput,
+    )
+
+    class ResilientListener(Listener):
+        """Keyboard listener that re-arms its tap when macOS disables it."""
+
+        #: Called after the tap is re-armed, so the owner can reset state.
+        on_tap_recovered: Callable[[], None] | None = None
+
+        def __init__(self, *args, **kwargs):
+            self._tap = None
+            super().__init__(*args, **kwargs)
+
+        def _create_event_tap(self):
+            self._tap = super()._create_event_tap()
+            return self._tap
+
+        def _handle_message(
+            self, proxy, event_type, event, refcon, injected=False
+        ):
+            if event_type in _TAP_DISABLED:
+                self.rearm_tap()
+                callback = self.on_tap_recovered
+                if callback is not None:
+                    callback()
+                return None
+            return super()._handle_message(
+                proxy, event_type, event, refcon, injected
+            )
+
+        def rearm_tap(self) -> bool:
+            if self._tap is None:
+                return False
+            CGEventTapEnable(self._tap, True)
+            return self.tap_enabled
+
+        @property
+        def tap_enabled(self) -> bool:
+            return self._tap is not None and bool(CGEventTapIsEnabled(self._tap))
+
+    return ResilientListener
+
+
 class HotkeyListener:
     """Calls ``on_start``/``on_stop`` according to hotkey and mode."""
 
@@ -69,11 +136,14 @@ class HotkeyListener:
         mode: str,
         on_start: Callable[[], None],
         on_stop: Callable[[], None],
+        on_interrupt: Callable[[], None] | None = None,
     ):
         self.key = parse_hotkey(hotkey)
         self.mode = mode
         self.on_start = on_start
         self.on_stop = on_stop
+        # Called when a hold is cut short by the tap dying mid-press.
+        self.on_interrupt = on_interrupt
         self._active = False
         self._listener = None
 
@@ -114,6 +184,39 @@ class HotkeyListener:
         listener = self._listener
         return listener is not None and listener.is_alive()
 
+    @property
+    def tap_enabled(self) -> bool:
+        """Whether macOS is still delivering events to our tap.
+
+        A live thread is not enough: the tap can be switched off while the
+        thread keeps running, which is the silent failure this guards.
+        """
+        listener = self._listener
+        if listener is None:
+            return False
+        # Non-macOS listeners have no tap; treat them as always live.
+        return bool(getattr(listener, "tap_enabled", True))
+
+    def rearm(self) -> bool:
+        """Switch the tap back on; fall back to a full restart."""
+        listener = self._listener
+        rearm_tap = getattr(listener, "rearm_tap", None)
+        if rearm_tap is not None and rearm_tap():
+            self._handle_tap_recovered()
+            return True
+        self.stop()
+        self.start()
+        return self.tap_enabled
+
+    def _handle_tap_recovered(self) -> None:
+        # While the tap was off no events arrived, so a release we were
+        # waiting on is gone for good. Clear the held-key state or the next
+        # press is swallowed as auto-repeat and never starts a recording.
+        was_active, self._active = self._active, False
+        log("[localflow] macOS disabled the event tap — re-armed")
+        if was_active and self.on_interrupt is not None:
+            self.on_interrupt()
+
     def start(self) -> None:
         """Start listening in a background thread (non-blocking)."""
         if self.alive:
@@ -121,12 +224,12 @@ class HotkeyListener:
         if self._listener is not None:
             # A dead listener object can't be restarted; drop it first.
             self.stop()
-        from pynput.keyboard import Listener
-
-        self._listener = Listener(
+        listener = _listener_class()(
             on_press=self._on_press, on_release=self._on_release
         )
-        self._listener.start()
+        listener.on_tap_recovered = self._handle_tap_recovered
+        self._listener = listener
+        listener.start()
 
     def join(self) -> None:
         """Block until the listener stops (Ctrl+C interrupts)."""

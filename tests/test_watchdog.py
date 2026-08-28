@@ -59,6 +59,7 @@ def engine(monkeypatch):
     monkeypatch.setattr(app_module, "Recorder", FakeRecorder)
     engine = DictationApp(Config())
     engine._start_worker()
+    engine._start_audio_worker()
     yield engine
     engine.stop()
 
