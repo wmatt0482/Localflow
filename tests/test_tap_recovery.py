@@ -56,6 +56,16 @@ class SlowRecorder:
         self.recording = False
         return np.zeros(0, dtype=np.float32)
 
+    # Mirrors the real Recorder: the engine bounds every close, because
+    # CoreAudio can deadlock inside the real one.
+    last_device_name = "Fake Microphone"
+    last_peak = 0.0
+
+    def stop_with_timeout(self, timeout):
+        audio = self.stop()
+        self.last_peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        return audio, False
+
 
 def _wait_for(predicate, timeout=5.0):
     deadline = time.time() + timeout
@@ -105,7 +115,8 @@ def test_recording_survives_a_slow_microphone(engine):
     engine._on_start()
     assert _wait_for(lambda: engine.recorder.recording)
     engine._started_at = time.monotonic() - 2.0  # a real-length utterance
-    engine.recorder.stop = lambda: np.zeros(16000, dtype=np.float32)
+    # Audible, not zeros: silence is now reported, not transcribed.
+    engine.recorder.stop = lambda: np.full(16000, 0.1, dtype=np.float32)
     engine._on_stop()
     assert _wait_for(lambda: engine.output.sent == ["hello "])
 

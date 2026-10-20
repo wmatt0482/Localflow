@@ -51,6 +51,16 @@ class FakeRecorder:
         self.recording = False
         return np.zeros(0, dtype=np.float32)
 
+    # Mirrors the real Recorder: the engine bounds every close, because
+    # CoreAudio can deadlock inside the real one.
+    last_device_name = "Fake Microphone"
+    last_peak = 0.0
+
+    def stop_with_timeout(self, timeout):
+        audio = self.stop()
+        self.last_peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        return audio, False
+
 
 @pytest.fixture
 def engine(monkeypatch):
@@ -121,9 +131,11 @@ def test_watchdog_restarts_a_dead_worker(engine, monkeypatch):
     engine._jobs.put(None)
     assert _wait_for(lambda: not dead.is_alive())
 
+    # _start_worker assigns the attribute before starting the thread, so
+    # "replaced" can be true a moment before it is actually running.
     assert _wait_for(lambda: engine._worker_thread is not dead)
-    assert engine._worker_thread.is_alive()
-    assert engine.healthy
+    assert _wait_for(lambda: engine._worker_thread.is_alive())
+    assert _wait_for(lambda: engine.healthy)
 
     # and the replacement actually works
     engine._jobs.put(np.zeros(16000, dtype=np.float32))

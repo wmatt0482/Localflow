@@ -11,6 +11,7 @@ from .config import Config
 from .hotkeys import HotkeyListener
 from .output import TextOutput
 from .recorder import Recorder
+from . import recovery
 from . import textproc
 from .transcriber import Transcriber
 
@@ -19,6 +20,18 @@ MIN_UTTERANCE_SECONDS = 0.3
 
 # How often to check that the background threads are still alive.
 WATCHDOG_INTERVAL_SECONDS = 15.0
+
+# How long to let CoreAudio finish closing the stream before treating it
+# as deadlocked. Normal closes are milliseconds.
+STOP_TIMEOUT_SECONDS = 8.0
+
+# How long a single audio command may run before the worker counts as
+# wedged. Opening a cold device can take a second; eight is generous.
+STUCK_AUDIO_SECONDS = 25.0
+
+# Digital silence: a working microphone's noise floor is far above this.
+SILENCE_PEAK = 1e-6
+SILENCE_MIN_SECONDS = 0.5
 
 
 class DictationApp:
@@ -45,6 +58,11 @@ class DictationApp:
         self._watchdog_thread: threading.Thread | None = None
         self._stopping = threading.Event()
         self._paused = False
+        # (command, started_at) while the audio worker is inside one, so
+        # the watchdog can tell a wedged worker from an idle one. A live
+        # thread is not proof of progress: a CoreAudio deadlock leaves it
+        # alive and blocked forever.
+        self._audio_inflight: tuple[str, float] | None = None
         self.ready = False
 
     # -- hotkey callbacks ------------------------------------------------
@@ -77,10 +95,32 @@ class DictationApp:
     def _finish_recording(self) -> None:
         if not self.recorder.recording:
             return
-        audio = self.recorder.stop()
+        device = self.recorder.last_device_name or "the microphone"
+        audio, timed_out = self.recorder.stop_with_timeout(STOP_TIMEOUT_SECONDS)
+        if timed_out:
+            # macOS is holding a HAL mutex that will never be released;
+            # the thread doing the close is lost and PortAudio's state is
+            # now unusable, so nothing in this process can recover.
+            recovery.restart(
+                f"the microphone ('{device}') locked up while closing"
+            )
+            return
         duration = time.monotonic() - self._started_at
         if duration < MIN_UTTERANCE_SECONDS or audio.size == 0:
             log("  (too short, ignored)")
+            return
+        if (
+            duration >= SILENCE_MIN_SECONDS
+            and self.recorder.last_peak <= SILENCE_PEAK
+        ):
+            # Whisper's voice-activity filter would report this as "no
+            # speech detected" in a tenth of a second, which reads exactly
+            # like an accidental tap. Name the real problem instead.
+            log(
+                f"[localflow] '{device}' recorded {duration:.1f}s of silence - "
+                f"it is muted, asleep or the wrong input. Check System "
+                f"Settings > Sound > Input."
+            )
             return
         self._jobs.put(audio)
 
@@ -89,6 +129,7 @@ class DictationApp:
             command = self._audio_cmds.get()
             if command is None:
                 return
+            self._audio_inflight = (command, time.monotonic())
             try:
                 if command == "start":
                     self._begin_recording()
@@ -98,6 +139,8 @@ class DictationApp:
                     self._abort_recording()
             except Exception as e:
                 log_exception(f"[localflow] audio error ({command}): {e}")
+            finally:
+                self._audio_inflight = None
 
     # -- transcription worker ---------------------------------------------
 
@@ -162,7 +205,10 @@ class DictationApp:
         stale audio at the cursor. Throw it away instead.
         """
         if self.recorder.recording:
-            self.recorder.stop()
+            _, timed_out = self.recorder.stop_with_timeout(STOP_TIMEOUT_SECONDS)
+            if timed_out:
+                recovery.restart("the microphone locked up while closing")
+                return
             log("[localflow] discarded an interrupted recording")
 
     def _start_worker(self) -> None:
@@ -187,6 +233,19 @@ class DictationApp:
         """
         while not self._stopping.wait(WATCHDOG_INTERVAL_SECONDS):
             try:
+                inflight = self._audio_inflight
+                if (
+                    inflight is not None
+                    and time.monotonic() - inflight[1] > STUCK_AUDIO_SECONDS
+                ):
+                    # Belt and braces: _finish_recording already bounds the
+                    # close, but any other block in the audio thread is just
+                    # as unrecoverable, and the thread stays "alive".
+                    recovery.restart(
+                        f"the audio worker has been stuck on '{inflight[0]}' "
+                        f"for {time.monotonic() - inflight[1]:.0f}s"
+                    )
+                    continue
                 if self._worker_thread is not None and not self._worker_thread.is_alive():
                     log("[localflow] transcription worker died — restarting")
                     self._start_worker()
